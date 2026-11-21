@@ -88,9 +88,10 @@ def isolated_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(research_logger, "TRADES_FILE", str(tmp_path / "research_trades.csv"))
     monkeypatch.setattr(main, "STATE_FILE", str(tmp_path / "state.json"))
     monkeypatch.setattr(main, "STATE_FILE_TMP", str(tmp_path / "state.json.tmp"))
-    main._external_close_candidates.clear()
+    # Изоляция: подмена словаря кандидатов В3 через monkeypatch вместо
+    # прямого clear() (раньше мутация переживала тест при падении).
+    monkeypatch.setattr(main, "_external_close_candidates", {})
     yield tmp_path
-    main._external_close_candidates.clear()
 
 
 def make_buy_pos(**over):

@@ -136,6 +136,9 @@ def test_subprocess_saves_state_then_killed(state_paths, tmp_path):
         import json, os, sys
         sys.path.insert(0, r"{os.getcwd()}")
         from decimal import Decimal
+        import tests.conftest  # SDK-заглушки из tests/conftest.py (no-op при реальном SDK)
+        from tests.conftest import _install_stubs
+        _install_stubs()
         import main
         from execution import ExecutionMonitor
         from risk_manager import RiskManager
@@ -186,6 +189,9 @@ def test_second_process_restores_state(state_paths):
     save_script = textwrap.dedent(f"""
         import sys, os
         sys.path.insert(0, r"{os.getcwd()}")
+        import tests.conftest  # SDK-заглушки из tests/conftest.py (no-op при реальном SDK)
+        from tests.conftest import _install_stubs
+        _install_stubs()
         import main
         from execution import ExecutionMonitor
         from risk_manager import RiskManager
@@ -212,6 +218,9 @@ def test_second_process_restores_state(state_paths):
     load_script = textwrap.dedent(f"""
         import sys, os
         sys.path.insert(0, r"{os.getcwd()}")
+        import tests.conftest  # SDK-заглушки из tests/conftest.py (no-op при реальном SDK)
+        from tests.conftest import _install_stubs
+        _install_stubs()
         import main
         from execution import ExecutionMonitor
         from risk_manager import RiskManager

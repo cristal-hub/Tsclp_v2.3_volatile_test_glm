@@ -214,16 +214,18 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "STATE_FILE_TMP", str(tmp_path / "state.json.tmp"))
     monkeypatch.setattr(main, "TRADING_FLAG", str(tmp_path / "trading.flag"))
     monkeypatch.setattr(config, "RECONCILE_CONFIRM_MIN_AGE_SECONDS", MIN_AGE)
-    main._external_close_candidates.clear()
-    main.reconcile_done = False
-    main.state_save_failed = False
-    main.telegram_bot = None
-    main.top_instruments = []
+    # Изоляция (аудит pytest-изоляции): вместо прямых присваиваний и
+    # мутаций in-place все глобальные значения main задаются через
+    # monkeypatch — pytest восстанавливает их после каждого теста.
+    monkeypatch.setattr(main, "_external_close_candidates", {})
+    monkeypatch.setattr(main, "reconcile_done", False)
+    monkeypatch.setattr(main, "state_save_failed", False)
+    monkeypatch.setattr(main, "telegram_bot", None)
+    monkeypatch.setattr(main, "top_instruments", [])
     ledger = OrderLedger(str(tmp_path / "order_ledger.jsonl"))
     ledger.load()
-    main.ledger_ref = ledger
+    monkeypatch.setattr(main, "ledger_ref", ledger)
     yield SimpleNamespace(tmp_path=tmp_path, ledger=ledger)
-    main._external_close_candidates.clear()
 
 
 def fresh_monitor(pos, client):
@@ -509,7 +511,7 @@ def test_defect2_5_none_snapshot_neither_confirms_nor_resets(env):
     assert broker.orders_sent == []
 
 
-def test_defect2_6_restart_between_confirmations_no_instant_close(env):
+def test_defect2_6_restart_between_confirmations_no_instant_close(env, monkeypatch):
     """Сценарий 6: рестарт между первым и вторым подтверждением.
     Кандидаты В3 не персистятся (консервативно): после рестарта мгновенного
     закрытия НЕТ — двойное подтверждение начинается заново (два новых
@@ -533,8 +535,10 @@ def test_defect2_6_restart_between_confirmations_no_instant_close(env):
     monitor2.import_state(json.load(open(tmp_path / "state.json", encoding="utf-8")))
     pos2 = monitor2.positions["F1"]
     assert pos2.state == PositionState.UNCERTAIN      # UNCERTAIN пережил рестарт
-    main._external_close_candidates.clear()           # in-memory кандидаты не персистятся
-    main.reconcile_done = False
+    # in-memory кандидаты не персистятся (изоляция: мутация через monkeypatch
+    # вместо прямого clear/присваивания, чтобы не переживать тест)
+    monkeypatch.setattr(main, "_external_close_candidates", {})
+    monkeypatch.setattr(main, "reconcile_done", False)
 
     # --- цикл 2 (после рестарта): мгновенного закрытия НЕТ ---
     run(main.trading_cycle(broker, rm, None, monitor2, ledger))

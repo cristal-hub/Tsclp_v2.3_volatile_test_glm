@@ -1001,7 +1001,14 @@ async def test_i5_save_failure_no_false_confirmation(env, monkeypatch):
 
     journal_before = _journal_all_safe(ledger)
     client.uncertain_state = False
-    main.state_save_failed = False
+    # Изоляция (аудит pytest-изоляции): раньше прямое присваивание
+    # main.state_save_failed = False переживало тест — после него флаг
+    # state_save_failed=True (устанавливаемый _save_state_checked при
+    # ошибке сохранения) утекал в следующие тесты и блокировал входы
+    # (test_main::trading_cycle). monkeypatch восстанавливает исходное
+    # значение автоматически; проверка state_save_failed is True ниже
+    # работает как прежде (production-функция пишет в атрибут модуля).
+    monkeypatch.setattr(main, "state_save_failed", False)
 
     sent = []
 

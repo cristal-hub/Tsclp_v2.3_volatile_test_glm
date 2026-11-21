@@ -55,7 +55,7 @@ async def test_reconcile_empty_ok_clears_uncertain():
 
 
 @pytest.mark.asyncio
-async def test_trading_cycle_blocks_entry_on_positions_error():
+async def test_trading_cycle_blocks_entry_on_positions_error(monkeypatch):
     """
     Если get_positions() вернул None перед входом — новые входы запрещены.
     get_last_prices возвращает {} — trading_cycle выходит на «Нет цен» до проверки positions.
@@ -63,7 +63,9 @@ async def test_trading_cycle_blocks_entry_on_positions_error():
     """
     client = FakeClient(positions=None, raise_on_positions=True)
     mon = ExecutionMonitor(client)
-    main.reconcile_done = True
+    # Изоляция: раньше прямое присваивание main.reconcile_done = True
+    # переживало тест. monkeypatch восстанавливает значение автоматически.
+    monkeypatch.setattr(main, "reconcile_done", True)
     # reconcile при ошибке сохраняет UNCERTAIN и сбрасывает reconcile_done.
     await main.reconcile(client, mon)
     assert client.uncertain_state is True
@@ -71,18 +73,19 @@ async def test_trading_cycle_blocks_entry_on_positions_error():
 
 
 @pytest.mark.asyncio
-async def test_trading_cycle_exits_on_no_prices():
+async def test_trading_cycle_exits_on_no_prices(monkeypatch):
     """Если цен нет — цикл корректно выходит, не отправляя заявок."""
     client = FakeClient(positions={})
     mon = ExecutionMonitor(client)
-    import main as m
-    old_top = m.top_instruments
-    m.top_instruments = []
-    try:
-        # Не должно падать и не должно отправлять заявок.
-        await main.trading_cycle(client, None, None, mon)
-    finally:
-        m.top_instruments = old_top
+    # Изоляция: раньше ручное сохранение/восстановление top_instruments
+    # через try/finally; кроме того, цикл завершался _save_state_checked
+    # с rm=None — флаг state_save_failed переживал тест и блокировал входы
+    # в СЛЕДУЮЩИХ тестах (test_main::trading_cycle). monkeypatch
+    # восстанавливает оба значения автоматически.
+    monkeypatch.setattr(main, "top_instruments", [])
+    monkeypatch.setattr(main, "state_save_failed", False)
+    # Не должно падать и не должно отправлять заявок.
+    await main.trading_cycle(client, None, None, mon)
 
 
 @pytest.mark.asyncio

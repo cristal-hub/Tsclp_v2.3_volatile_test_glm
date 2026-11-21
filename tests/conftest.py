@@ -4,11 +4,42 @@
 # чистом CI-окружении), ставятся минимальные заглушки. В окружении
 # репозитория (SDK установлен) заглушки НЕ используются — поведение
 # тестового набора не меняется.
+#
+# ИЗОЛЯЦИЯ ГЛОБАЛЬНОГО СОСТОЯНИЯ main (аудит pytest-изоляции):
+#   autouse-фикстура _isolate_main_globals() сбрасывает глобальные
+#   переменные/контейнеры модуля main к чистым производственным значениям
+#   ПЕРЕД КАЖДЫМ тестом. Раньше прямые присваивания в тестах
+#   (test_main.py, test_buy_registration_fix2*, test_fail_closed.py и др.)
+#   и внутренние мутации production-функций (_save_state_checked ->
+#   state_save_failed, reconcile -> reconcile_done /
+#   _last_reconcile_confirmed_utc) переживали тест и ломали СЛЕДУЮЩИЕ
+#   тесты в зависимости от порядка прогона (test_trading_flag,
+#   test_persistence, test_main::trading_cycle).
+#   Механизм: monkeypatch.setattr на те же имена — на старте каждого
+#   теста значения чистые, после теста восстанавливаются pytest'ом.
+#   Production-код не меняется; сценарии и ожидания тестов не меняются;
+#   тест, задающий своё значение через monkeypatch/фикстуру, работает
+#   как прежде (его подмена накладывается поверх сброса).
 
 import sys
 import types
 from datetime import datetime, timezone
 from decimal import Decimal
+
+import pytest
+
+
+class _GetMaxLotsRequest:
+    """Минимальная заглушка GetMaxLotsRequest: принимает произвольные
+    keyword-аргументы, как настоящий protobuf-конструктор (production
+    tinkoff_client.get_sandbox_max_lots создаёт запрос через
+    GetMaxLotsRequest(account_id=..., instrument_id=..., price=...)).
+    Без неё в чистом CI-окружении get_sandbox_max_lots получает TypeError
+    и fail-closed возвращает None — тесты max_lots падают не из-за логики."""
+
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
 
 class _EnumVal:
@@ -66,7 +97,7 @@ def _install_stubs():
         EXECUTION_REPORT_STATUS_PARTIALLYFILL=_EnumVal("PARTIALLYFILL", 5),
         EXECUTION_REPORT_STATUS_EXPIRED=_EnumVal("EXPIRED", 6),
     )
-    invest.GetMaxLotsRequest = _EnumVal("GetMaxLotsRequest")
+    invest.GetMaxLotsRequest = _GetMaxLotsRequest
     invest.AsyncClient = object
 
     grpc = types.ModuleType("t_tech.invest.grpc")
@@ -118,3 +149,34 @@ def _install_stubs():
 
 
 _install_stubs()
+
+import main  # noqa: E402 — ПОСЛЕ установки заглушек SDK (см. _install_stubs)
+
+
+# ------------------------------------------------------------------
+# Общая изоляция глобального состояния main (см. шапку файла).
+# Оригиналы функций фиксируются ОДИН РАЗ при импорте conftest — ДО любых
+# подмен в тестах, чтобы подменённые MagicMock-функции не переживали тест.
+# ------------------------------------------------------------------
+
+_ORIG_IS_TRADING_ENABLED = main.is_trading_enabled
+_ORIG_SAVE_STATE = main._save_state
+
+
+@pytest.fixture(autouse=True)
+def _isolate_main_globals(monkeypatch):
+    """Сбрасывает глобальное состояние main к чистым значениям на каждый тест."""
+    monkeypatch.setattr(main, "reconcile_done", False)
+    monkeypatch.setattr(main, "state_save_failed", False)
+    monkeypatch.setattr(main, "_last_reconcile_confirmed_utc", None)
+    monkeypatch.setattr(main, "_external_close_candidates", {})
+    monkeypatch.setattr(main, "_strategy_event_keys", set())
+    monkeypatch.setattr(main, "_promote_throttle", {"n": 0, "alive": 0})
+    monkeypatch.setattr(main, "top_instruments", [])
+    monkeypatch.setattr(main, "telegram_bot", None)
+    monkeypatch.setattr(main, "main_client", None)
+    monkeypatch.setattr(main, "monitor_ref", None)
+    monkeypatch.setattr(main, "rm_ref", None)
+    monkeypatch.setattr(main, "ledger_ref", None)
+    monkeypatch.setattr(main, "is_trading_enabled", _ORIG_IS_TRADING_ENABLED)
+    monkeypatch.setattr(main, "_save_state", _ORIG_SAVE_STATE)

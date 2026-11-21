@@ -201,16 +201,18 @@ def env(tmp_path, monkeypatch):
     # RECONCILE_CONFIRM_MIN_AGE_SECONDS — обязательное условие
     # двойного подтверждения (защита от мгновенного закрытия).
     monkeypatch.setattr(config, "RECONCILE_CONFIRM_MIN_AGE_SECONDS", 30.0)
-    main._external_close_candidates.clear()
-    main.reconcile_done = False
-    main.state_save_failed = False
-    main.telegram_bot = None
-    main.top_instruments = []
+    # Изоляция (аудит pytest-изоляции): вместо прямых присваиваний и
+    # мутаций in-place все глобальные значения main задаются через
+    # monkeypatch — pytest восстанавливает их после каждого теста.
+    monkeypatch.setattr(main, "_external_close_candidates", {})
+    monkeypatch.setattr(main, "reconcile_done", False)
+    monkeypatch.setattr(main, "state_save_failed", False)
+    monkeypatch.setattr(main, "telegram_bot", None)
+    monkeypatch.setattr(main, "top_instruments", [])
     ledger = OrderLedger(str(tmp_path / "order_ledger.jsonl"))
     ledger.load()
-    main.ledger_ref = ledger
+    monkeypatch.setattr(main, "ledger_ref", ledger)
     yield SimpleNamespace(tmp_path=tmp_path, ledger=ledger)
-    main._external_close_candidates.clear()
 
 
 def fresh_monitor(pos, client):

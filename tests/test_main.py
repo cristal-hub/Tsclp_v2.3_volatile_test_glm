@@ -159,7 +159,7 @@ async def test_process_closing_resolves_uncertain():
 # Дополнение к tests/test_main.py
 
 @pytest.mark.asyncio
-async def test_trading_cycle_not_fill_but_executed_creates_position(monkeypatch):
+async def test_trading_cycle_not_fill_but_executed_creates_position(monkeypatch, tmp_path):
     """
     status=NEW (не FILL), но get_sandbox_order_state показал lots_executed > 0
     -> создаётся TrackedPosition (этап 4.1).
@@ -215,10 +215,29 @@ async def test_trading_cycle_not_fill_but_executed_creates_position(monkeypatch)
     rm.export_state = MagicMock(return_value={})
     rm.import_state = MagicMock()
 
-    main.top_instruments = [{"figi": "F1", "ticker": "MVID"}]
-    main.reconcile_done = True
-    main.is_trading_enabled = MagicMock(return_value=True)
-    main._save_state = MagicMock(return_value=True)
+    # Изоляция (аудит pytest-изоляции): раньше здесь были ПРЯМЫЕ присваивания
+    # main.top_instruments/reconcile_done/is_trading_enabled/_save_state —
+    # они переживали тест и ломали следующие (test_trading_flag:
+    # is_trading_enabled() возвращал MagicMock; test_persistence:
+    # _save_state подменялся MagicMock'ом без записи файла).
+    # Подмены monkeypatch восстанавливаются pytest'ом автоматически;
+    # сценарий и ожидания теста НЕ изменились.
+    # state_save_failed и ledger_ref задаются явно: trading_cycle читает их
+    # как входное состояние (fail-closed блокирует входы при
+    # state_save_failed=True, оставшемся от предыдущих тестов, и при
+    # отсутствующем реестре заявок — P0-2).
+    monkeypatch.setattr(main, "top_instruments", [{"figi": "F1", "ticker": "MVID"}])
+    monkeypatch.setattr(main, "reconcile_done", True)
+    monkeypatch.setattr(main, "state_save_failed", False)
+    monkeypatch.setattr(main, "is_trading_enabled", MagicMock(return_value=True))
+    monkeypatch.setattr(main, "_save_state", MagicMock(return_value=True))
+    # Рабочий реестр в tmp_path: шаг входов P0-2 требует доступного
+    # OrderLedger (без него вход заблокирован fail-closed — это отдельный
+    # контракт, проверяемый в других тестах); сценарий этого теста —
+    # создание позиции при не-FILL статусе с подтверждённым исполнением.
+    from order_ledger import OrderLedger
+    ledger = OrderLedger(str(tmp_path / "order_ledger.jsonl"))
+    monkeypatch.setattr(main, "ledger_ref", ledger)
 
     await main.trading_cycle(fake, rm, sm, monitor)
 

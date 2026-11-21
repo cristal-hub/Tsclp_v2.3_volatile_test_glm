@@ -368,6 +368,9 @@ async def test_f_recovery_notifies_unsaved_state(env, monkeypatch):
 
     monkeypatch.setattr(main, "notify", spy_notify)
     monkeypatch.setattr(main, "_save_state", lambda m, r: False)
+    # Изоляция (аудит pytest-изоляции): флаг state_save_failed, установленный
+    # _save_state_checked при ошибке сохранения, больше не переживает тест.
+    monkeypatch.setattr(main, "state_save_failed", False)
     kw = open_kwargs(oid, trade_id="t-F", executed=4, requested=4)
     kw["df"] = None  # без свечей -> RECOVERY
     pos = await main.register_executed_buy(client, monitor, rm, ledger, **kw)
@@ -421,6 +424,9 @@ async def test_g_primary_buy_unsaved_state(env, monkeypatch):
     real_save_state = main._save_state
     monkeypatch.setattr(main, "notify", spy_notify)
     monkeypatch.setattr(main, "_save_state", lambda m, r: False)
+    # Изоляция (аудит pytest-изоляции): флаг state_save_failed больше не
+    # переживает тест (устанавливается production _save_state_checked ниже).
+    monkeypatch.setattr(main, "state_save_failed", False)
     pos = await main.register_executed_buy(
         client, monitor, rm, ledger,
         **open_kwargs(oid, trade_id="t-G", executed=5, requested=10))

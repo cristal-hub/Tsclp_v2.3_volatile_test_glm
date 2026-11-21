@@ -230,7 +230,7 @@ async def run_entry_cycle(client, rm, sm, monitor, ledger, figi=FIGI):
 # ============================================================
 
 @pytest.mark.asyncio
-async def test_scenario_1_partial_buy_cancelled_portfolio_silent(env):
+async def test_scenario_1_partial_buy_cancelled_portfolio_silent(env, monkeypatch):
     """Сценарий 1 / Дефект №1: частичный BUY, остаток CANCELLED, портфель
     ВРЕМЕННО не показывает позицию — исполнение НЕ теряется, позиция
     регистрируется ровно в подтверждённом количестве."""
@@ -241,8 +241,10 @@ async def test_scenario_1_partial_buy_cancelled_portfolio_silent(env):
     monitor = ExecutionMonitor(client)
     rm = FakeRM(sl=95.0, tp=110.0, size=5)
     sm = FakeSM("BUY")
-    main.monitor_ref = monitor
-    main.ledger_ref = ledger
+    # Изоляция: подмены через monkeypatch (раньше прямые присваивания
+    # переживали тест и утекали в следующие).
+    monkeypatch.setattr(main, "monitor_ref", monitor)
+    monkeypatch.setattr(main, "ledger_ref", ledger)
 
     await run_entry_cycle(client, rm, sm, monitor, ledger)
 
@@ -266,7 +268,7 @@ async def test_scenario_1_partial_buy_cancelled_portfolio_silent(env):
 
 
 @pytest.mark.asyncio
-async def test_defect1_unavailable_portfolio_with_confirmed_lots_registers(env):
+async def test_defect1_unavailable_portfolio_with_confirmed_lots_registers(env, monkeypatch):
     """Дефект №1 (снимок недоступен): брокер подтвердил lots_executed>0, но
     свежий снимок портфеля ВТОРОЙ запрос вернул недостоверным — исполнение
     всё равно регистрируется (отсутствие снимка не отменяет исполнение)."""
@@ -278,8 +280,8 @@ async def test_defect1_unavailable_portfolio_with_confirmed_lots_registers(env):
     monitor = ExecutionMonitor(client)
     rm = FakeRM(sl=95.0, tp=110.0, size=5)
     sm = FakeSM("BUY")
-    main.monitor_ref = monitor
-    main.ledger_ref = ledger
+    monkeypatch.setattr(main, "monitor_ref", monitor)
+    monkeypatch.setattr(main, "ledger_ref", ledger)
 
     await run_entry_cycle(client, rm, sm, monitor, ledger)
 
@@ -545,7 +547,15 @@ async def test_scenario_9_unknown_figi_order_blocks_buy_globally(env):
 async def test_defect4_unknown_side_resolves_only_without_execution(env):
     """Дефект №4 (разрешение): заявка с side=None разрешается ТОЛЬКО при
     достоверном завершении без исполнения; при признаках исполнения остаётся
-    UNCERTAIN (BUY не разблокируются)."""
+    UNCERTAIN (BUY не разблокируются).
+
+    Актуализация ожидания (аудит pytest-изоляции, п.5 ТЗ): противоречивый
+    сценарий (сначала брокер показал исполнение, затем «тот же» отчёт
+    утверждает завершение без исполнения) — безопасное состояние UNCERTAIN,
+    а НЕ CANCELLED: монотонный guard реестра (order_ledger.append) не даёт
+    откатить cumulative execution 2 -> 0 и fail-closed сохраняет
+    неопределённость до сверки. Достоверное разрешение БЕЗ исполнения
+    проверяется на отдельной заявке без признаков исполнения (u4)."""
     ledger = make_ledger(env.tmp_path)
     oid = "u3"
     ledger.record_uncertain(oid, figi=FIGI, ticker=TICKER, side=None,
@@ -563,28 +573,44 @@ async def test_defect4_unknown_side_resolves_only_without_execution(env):
     # позиция НЕ регистрировалась автоматически
     assert monitor.get_position(FIGI) is None
 
-    # (б) достоверное завершение без исполнения — блокировка снимается
+    # (б) противоречивый «повторный» отчёт (исполнение 2 -> 0) — fail-closed:
+    # реестр не откатывает исполнение, заявка остаётся UNCERTAIN,
+    # блокировка BUY по FIGI сохраняется
     client.order_states[oid] = fake_state(CANCELLED, lots_executed=0)
     await main.poll_open_orders(client, monitor, FakeRM(), ledger)
     rec = ledger.latest(oid)
-    assert rec["status"] == "CANCELLED"
-    assert ledger.figi_blocks_buy(FIGI) is False
+    assert rec["status"] == "UNCERTAIN", \
+        f"противоречивый отчёт должен сохранять fail-closed UNCERTAIN, получен {rec['status']}"
+    assert ledger.figi_blocks_buy(FIGI) is True
+
+    # (в) достоверное завершение БЕЗ исполнения заявки без признаков
+    # исполнения — блокировка по этому FIGI снимается
+    oid2 = "u4"
+    ledger.record_uncertain(oid2, figi=OTHER_FIGI, ticker="OTHER", side=None,
+                            requested_lots=5, source="startup",
+                            reason="активная заявка брокера без записи в реестре")
+    client.order_states[oid2] = fake_state(CANCELLED, lots_executed=0)
+    await main.poll_open_orders(client, monitor, FakeRM(), ledger)
+    rec2 = ledger.latest(oid2)
+    assert rec2["status"] == "CANCELLED"
+    assert ledger.figi_blocks_buy(OTHER_FIGI) is False
 
 
 # ============================================================
 # Дефект №5: повреждение OrderLedger не превращается в пустой реестр
 # ============================================================
 
-async def _assert_buy_blocked(env, ledger, client, monitor):
+async def _assert_buy_blocked(env, monkeypatch, ledger, client, monitor):
     rm, sm = FakeRM(), FakeSM("BUY")
-    main.ledger_ref = ledger
+    # Изоляция: подмена через monkeypatch вместо прямого присваивания.
+    monkeypatch.setattr(main, "ledger_ref", ledger)
     await run_entry_cycle(client, rm, sm, monitor, ledger)
     assert sm.calls == 0, "новые BUY не заблокированы"
     assert client.last_post is None
 
 
 @pytest.mark.asyncio
-async def test_scenario_10_corrupted_ledger_blocks_buy(env):
+async def test_scenario_10_corrupted_ledger_blocks_buy(env, monkeypatch):
     """Сценарий 10 / Дефект №5: повреждённая строка журнала (в середине) —
     реестр недостоверен, новые BUY запрещены, журнал НЕ перезаписывается,
     целые записи продолжают читаться (best effort)."""
@@ -607,7 +633,7 @@ async def test_scenario_10_corrupted_ledger_blocks_buy(env):
 
     client = FakeClient(positions={})
     monitor = ExecutionMonitor(client)
-    await _assert_buy_blocked(env, ledger, client, monitor)
+    await _assert_buy_blocked(env, monkeypatch, ledger, client, monitor)
 
 
 @pytest.mark.asyncio
@@ -619,6 +645,15 @@ async def test_scenario_11_ledger_read_error_blocks_buy(env, monkeypatch):
         f.write(ledger_line("oidC", status="INTENT", figi=FIGI) + "\n")
 
     ledger = OrderLedger(path)
+
+    # Изоляция (аудит pytest-изоляции): подмена builtins.open выполняется в
+    # СКОП-контексте и снимается сразу после ledger.load(). Раньше здесь был
+    # monkeypatch.undo(), который снимал ВСЕ подмены этого теста, включая
+    # изоляцию файлов диагностики (EVENTS_FILE/TRADES_FILE) и STATE_FILE из
+    # conftest-фикстур: последующий trading_cycle писал SIGNAL/RECONCILE_OK
+    # в ПРОИЗВОДСТВЕННЫЙ research_events.jsonl в корне репозитория и
+    # state.json — нарушение критерия «производственные журналы не
+    # изменяются при прогоне pytest».
     real_open = builtins.open
 
     def broken_open(file, mode="r", *a, **kwargs):
@@ -630,19 +665,19 @@ async def test_scenario_11_ledger_read_error_blocks_buy(env, monkeypatch):
             raise PermissionError(13, "simulated read failure")
         return real_open(file, mode, *a, **kwargs)
 
-    monkeypatch.setattr(builtins, "open", broken_open)
-    ledger.load()
+    with monkeypatch.context() as m:
+        m.setattr(builtins, "open", broken_open)
+        ledger.load()
     assert ledger.is_reliable() is False, "ошибка чтения не перевела реестр в недостоверность"
     assert ledger.unreliable_reason
-    monkeypatch.undo()
 
     client = FakeClient(positions={})
     monitor = ExecutionMonitor(client)
-    await _assert_buy_blocked(env, ledger, client, monitor)
+    await _assert_buy_blocked(env, monkeypatch, ledger, client, monitor)
 
 
 @pytest.mark.asyncio
-async def test_defect5_tail_corruption_no_truncate_blocks_buy(env):
+async def test_defect5_tail_corruption_no_truncate_blocks_buy(env, monkeypatch):
     """Дефект №5: повреждённый ХВОСТ журнала не обрезается, не молчит и
     запрещает новые BUY до восстановления целостности."""
     path = str(env.tmp_path / "order_ledger.jsonl")
@@ -657,7 +692,7 @@ async def test_defect5_tail_corruption_no_truncate_blocks_buy(env):
     assert '"trunc' in raw, "журнал был перезаписан/обрезан"
     client = FakeClient(positions={})
     monitor = ExecutionMonitor(client)
-    await _assert_buy_blocked(env, ledger, client, monitor)
+    await _assert_buy_blocked(env, monkeypatch, ledger, client, monitor)
 
 
 @pytest.mark.asyncio

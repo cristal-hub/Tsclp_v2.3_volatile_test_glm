@@ -21,6 +21,7 @@
 #   тест, задающий своё значение через monkeypatch/фикстуру, работает
 #   как прежде (его подмена накладывается поверх сброса).
 
+import enum
 import sys
 import types
 from datetime import datetime, timezone
@@ -89,14 +90,24 @@ def _install_stubs():
     invest.InstrumentStatus = types.SimpleNamespace(
         INSTRUMENT_STATUS_ALL=_EnumVal("ALL", 1),
     )
-    invest.OrderExecutionReportStatus = types.SimpleNamespace(
-        EXECUTION_REPORT_STATUS_FILL=_EnumVal("FILL", 1),
-        EXECUTION_REPORT_STATUS_REJECTED=_EnumVal("REJECTED", 2),
-        EXECUTION_REPORT_STATUS_CANCELLED=_EnumVal("CANCELLED", 3),
-        EXECUTION_REPORT_STATUS_NEW=_EnumVal("NEW", 4),
-        EXECUTION_REPORT_STATUS_PARTIALLYFILL=_EnumVal("PARTIALLYFILL", 5),
-        EXECUTION_REPORT_STATUS_EXPIRED=_EnumVal("EXPIRED", 6),
-    )
+    # ЭТАП 3: int-совместимая заглушка OrderExecutionReportStatus.
+    # FakeClient в тестах передаёт СЫРЫЕ КОДЫ статусов (int, как реальный
+    # protobuf-SDK: execution_report_status=1..6), а production сравнивает
+    # их напрямую с членами перечисления (main.py: PARTIALLYFILL / FILL).
+    # _EnumVal не реализует сравнение с int, поэтому ветки частичного
+    # исполнения/исполнения не срабатывали. enum.IntEnum сохраняет имена
+    # атрибутов (совместимость с production-кодом) и точные значения кодов
+    # T-Invest API и восстанавливает равенство member == int в обе стороны.
+    # Остальные _EnumVal-заглушки (OrderDirection, OrderType, ...) НЕ меняются.
+    class OrderExecutionReportStatus(enum.IntEnum):
+        EXECUTION_REPORT_STATUS_FILL = 1
+        EXECUTION_REPORT_STATUS_REJECTED = 2
+        EXECUTION_REPORT_STATUS_CANCELLED = 3
+        EXECUTION_REPORT_STATUS_NEW = 4
+        EXECUTION_REPORT_STATUS_PARTIALLYFILL = 5
+        EXECUTION_REPORT_STATUS_EXPIRED = 6
+
+    invest.OrderExecutionReportStatus = OrderExecutionReportStatus
     invest.GetMaxLotsRequest = _GetMaxLotsRequest
     invest.AsyncClient = object
 
